@@ -12,7 +12,8 @@ import google.generativeai as genai
 from document_processor import DocumentProcessor
 from embedding_generator import get_embedding_generator
 from vector_database import get_vector_database
-from rag_evaluator import RAGEvaluator
+# Import custom evaluator (our own implementation)
+from custom_evaluator import get_custom_evaluator
 
 # Load environment variables if available
 try:
@@ -20,6 +21,9 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+# Detect if running in Streamlit Cloud
+IS_STREAMLIT_CLOUD = os.getenv('STREAMLIT_SHARING_MODE') == 'true' or 'streamlit.app' in os.getenv('HOSTNAME', '')
 
 # Configure page
 st.set_page_config(
@@ -486,6 +490,8 @@ def initialize_session_state():
         st.session_state.evaluation_logs = []
     if 'current_page' not in st.session_state:
         st.session_state.current_page = "Chat & Evaluation"
+    if 'evaluator_type' not in st.session_state:
+        st.session_state.evaluator_type = "custom"
 
 def setup_gemini_api():
     """Setup Gemini API configuration"""
@@ -510,11 +516,9 @@ def setup_gemini_api():
             # Setup evaluator if evaluation is enabled
             if st.session_state.enable_evaluation:
                 if st.session_state.evaluator is None:
-                    st.session_state.evaluator = RAGEvaluator(
-                        api_key=api_key,
-                        model_name="gemini-2.0-flash-lite",
-                        enable_rate_limiting=True
-                    )
+                    # Use our custom evaluator
+                    st.session_state.evaluator = get_custom_evaluator(api_key)
+                    st.session_state.evaluator_type = "custom"
             
             st.sidebar.success("✅ Gemini API configured")
             return True, api_key
@@ -545,6 +549,14 @@ def setup_evaluation_settings(api_key_available: bool):
         st.sidebar.warning("⚠️ API key required for evaluation")
     
     if enable_eval and api_key_available:
+        # Show evaluator type
+        evaluator_type = getattr(st.session_state, 'evaluator_type', 'custom')
+        if evaluator_type == 'custom':
+            st.sidebar.success("🚀 Using Custom RAG Evaluator")
+            st.sidebar.caption("Full metrics: Answer Relevancy, Faithfulness, Contextual Relevancy & Recall")
+        else:
+            st.sidebar.info("🔧 Using basic evaluator")
+        
         # Evaluation metrics selection
         st.sidebar.subheader("Metrics")
         
@@ -739,42 +751,10 @@ def search_documents(query: str, top_k: int = None) -> List[Dict]:
         st.error(f"Error searching documents: {str(e)}")
         return []
 
-def generate_expected_output(query: str, retrieval_context: List[str]) -> str:
-    """
-    Automatically generate expected output based on query and retrieval context
-    
-    Args:
-        query: User's question
-        retrieval_context: Retrieved document chunks
-    
-    Returns:
-        str: Generated expected output
-    """
-    if not retrieval_context:
-        # If no context, create a simple expected output based on query
-        return f"A comprehensive answer to: {query}"
-    
-    # Create a concise expected output by summarizing key points from context
-    context_summary = []
-    for i, context in enumerate(retrieval_context[:3]):  # Use top 3 chunks
-        # Extract key sentences (first sentence or sentences with key terms)
-        sentences = context.split('.')
-        key_sentence = sentences[0].strip() if sentences else context[:100]
-        if key_sentence:
-            context_summary.append(key_sentence)
-    
-    # Create expected output that combines key information
-    if context_summary:
-        expected = ". ".join(context_summary[:2])  # Use top 2 key points
-        # Ensure it ends properly
-        if not expected.endswith('.'):
-            expected += "."
-        return expected
-    else:
-        return f"Based on the available information, here is a response to: {query}"
+
 
 def evaluate_response(query: str, response: str, relevant_chunks: List[Dict]) -> Optional[Dict]:
-    """Evaluate a single response using DeepEval metrics"""
+    """Evaluate a single response using available evaluator"""
     if not st.session_state.evaluator or not st.session_state.enable_evaluation:
         return None
     
@@ -783,23 +763,17 @@ def evaluate_response(query: str, response: str, relevant_chunks: List[Dict]) ->
         retrieval_context = [chunk['text'] for chunk in relevant_chunks]
         
         # Get selected metrics
-        metrics_to_use = getattr(st.session_state, 'selected_metrics', ['answer_relevancy'])
+        metrics_to_use = getattr(st.session_state, 'selected_metrics', ['answer_relevancy', 'faithfulness'])
         
         if not metrics_to_use:
             return None
         
-        # Auto-generate expected output if contextual_recall is selected
-        expected_output = None
-        if 'contextual_recall' in metrics_to_use:
-            expected_output = generate_expected_output(query, retrieval_context)
-        
-        # Run evaluation
-        results = st.session_state.evaluator.evaluate_single_response(
-            input_query=query,
-            actual_output=response,
-            retrieval_context=retrieval_context,
-            expected_output=expected_output,
-            metrics_to_use=metrics_to_use
+        # Use our custom evaluator
+        results = st.session_state.evaluator.evaluate_response(
+            query=query,
+            response=response,
+            context=retrieval_context,
+            metrics=metrics_to_use
         )
         
         return results
@@ -851,10 +825,23 @@ def display_evaluation_results(eval_results: Dict, threshold: float = 0.7):
     if 'error' in eval_results:
         with st.expander("🔍 Response Evaluation", expanded=False):
             error_msg = eval_results['error']
-            if '400' in error_msg and 'invalid' in error_msg.lower():
+            error_type = eval_results.get('error_type', 'general_error')
+            
+            if error_type == 'quota_exceeded':
+                st.error("❌ **API Quota Exceeded**")
+                st.warning("You've reached the free tier limit of 200 requests per day.")
+                st.info("💡 **Solutions:**")
+                st.write("- Wait until tomorrow for quota reset")
+                st.write("- Upgrade to a paid Gemini API plan")
+                st.write("- Disable evaluation temporarily")
+                
+            elif error_type == 'api_overloaded':
+                st.warning("⚠️ **API Temporarily Overloaded**")
+                st.info("The Gemini API is experiencing high traffic. Try again in a few minutes.")
+                
+            elif '400' in error_msg and 'invalid' in error_msg.lower():
                 st.error("❌ Invalid API key. Please check your Gemini API key.")
-            elif '503' in error_msg or 'overloaded' in error_msg.lower():
-                st.warning("⚠️ Gemini API is currently overloaded. Please try again later.")
+                
             else:
                 st.error(f"Evaluation failed: {error_msg}")
         return
@@ -869,7 +856,7 @@ def display_evaluation_results(eval_results: Dict, threshold: float = 0.7):
     # Enhanced evaluation results with 3D cards
     st.markdown("""
     <div class="evaluation-card">
-        <h2 style="margin-top: 0; color: #1e293b; font-weight: 600;">🔍 DeepEval Results</h2>
+        <h2 style="margin-top: 0; color: #1e293b; font-weight: 600;">🔍 RAG Evaluation Results</h2>
     """, unsafe_allow_html=True)
     
     # Show evaluation summary
