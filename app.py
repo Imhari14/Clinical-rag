@@ -817,7 +817,8 @@ def display_evaluation_results(eval_results: Dict, threshold: float = 0.7):
             'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
             'results': eval_results,
             'threshold': threshold,
-            'top_k': st.session_state.get('top_k', 5)
+            'top_k': st.session_state.get('top_k', 5),
+            'status': eval_results.get('status', 'success')
         }
         st.session_state.evaluation_logs.append(log_entry)
     
@@ -926,6 +927,14 @@ def display_evaluation_logs_page():
     """Display the evaluation logs page"""
     st.title("📊 Evaluation Logs & Performance Analysis")
     
+    # Clean up any inconsistent log entries
+    if hasattr(st.session_state, 'evaluation_logs'):
+        valid_logs = []
+        for log in st.session_state.evaluation_logs:
+            if 'results' in log or 'metrics' in log:
+                valid_logs.append(log)
+        st.session_state.evaluation_logs = valid_logs
+    
     if not st.session_state.evaluation_logs:
         st.info("🔍 No evaluation logs yet. Run some evaluations in the Chat & Evaluation page to see performance analysis here.")
         
@@ -951,7 +960,16 @@ def display_evaluation_logs_page():
     top_k_performance = {}
     
     for log in st.session_state.evaluation_logs:
-        results = log['results']
+        # Handle both log formats
+        if 'results' in log:
+            # Format 1: from display_evaluation_results
+            results = log['results']
+        elif 'metrics' in log:
+            # Format 2: from chat interface
+            results = log['metrics']
+        else:
+            continue  # Skip invalid log entries
+        
         top_k = log.get('top_k', 5)
         
         if top_k not in top_k_performance:
@@ -1211,9 +1229,28 @@ def display_settings_page():
         log_count = len(st.session_state.get('evaluation_logs', []))
         st.write(f"**Log Entries**: {log_count}")
         
-        if st.button("Clear Evaluation Logs", use_container_width=True):
-            st.session_state.evaluation_logs = []
-            st.success("✅ Evaluation logs cleared!")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Clear Evaluation Logs", use_container_width=True):
+                st.session_state.evaluation_logs = []
+                st.success("✅ Evaluation logs cleared!")
+        
+        with col2:
+            if st.button("Fix Corrupted Logs", use_container_width=True):
+                if hasattr(st.session_state, 'evaluation_logs'):
+                    original_count = len(st.session_state.evaluation_logs)
+                    valid_logs = []
+                    for log in st.session_state.evaluation_logs:
+                        if 'results' in log or 'metrics' in log:
+                            valid_logs.append(log)
+                    st.session_state.evaluation_logs = valid_logs
+                    removed_count = original_count - len(valid_logs)
+                    if removed_count > 0:
+                        st.success(f"✅ Removed {removed_count} corrupted log entries!")
+                    else:
+                        st.info("ℹ️ No corrupted logs found!")
+                else:
+                    st.info("ℹ️ No logs to fix!")
     
     with col3:
         st.markdown("""
@@ -1408,26 +1445,7 @@ def display_chat_interface():
                 'timestamp': chat_entry['timestamp']
             })
             
-            # Log evaluation with top_k for comparison
-            log_entry = {
-                'timestamp': chat_entry['timestamp'],
-                'query': prompt[:100] + "..." if len(prompt) > 100 else prompt,
-                'top_k': getattr(st.session_state, 'top_k', 5),
-                'metrics': {},
-                'sources_count': len(relevant_chunks)
-            }
-            
-            # Extract metric scores
-            threshold = getattr(st.session_state, 'eval_threshold', 0.7)
-            for metric_name, result in evaluation_results.items():
-                if isinstance(result, dict) and 'score' in result:
-                    score = result['score']
-                    log_entry['metrics'][metric_name] = {
-                        'score': score,
-                        'passed': score >= threshold
-                    }
-            
-            st.session_state.evaluation_logs.append(log_entry)
+            # Note: Evaluation logging is handled in display_evaluation_results function
         
         # Rerun to update the display
         st.rerun()
