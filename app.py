@@ -1,5 +1,5 @@
 """
-Simple RAG Evaluation with Gemini DeepEval
+Simple RAG Evaluation with Custom Metrics
 Clean interface focused on Gemini-based evaluation metrics only
 """
 
@@ -459,7 +459,7 @@ def display_header():
                 </div>
                 <div class="header-text">
                     <h1 class="main-title">Clinical Trial RAG Evaluation</h1>
-                    <p class="subtitle">DeepEval • Gemini 2.0 Flash-Lite • Real-time Metrics • RAG Assessment</p>
+                    <p class="subtitle">Custom Metrics • Gemini 2.0 Flash-Lite • Real-time Evaluation • RAG Assessment</p>
                     <p class="tagline">Advanced RAG Evaluation System with Comprehensive Metrics</p>
                 </div>
             </div>
@@ -539,7 +539,7 @@ def setup_evaluation_settings(api_key_available: bool):
     enable_eval = st.sidebar.checkbox(
         "Enable Real-time Evaluation",
         value=st.session_state.enable_evaluation,
-        help="Evaluate each response in real-time using DeepEval metrics",
+        help="Evaluate each response in real-time using custom RAG metrics",
         disabled=not api_key_available
     )
     
@@ -699,11 +699,11 @@ def test_api_connection():
     with st.spinner("Testing API connection..."):
         try:
             # Simple test evaluation
-            test_results = st.session_state.evaluator.evaluate_single_response(
-                input_query="test",
-                actual_output="test response",
-                retrieval_context=["test context"],
-                metrics_to_use=['answer_relevancy']
+            test_results = st.session_state.evaluator.evaluate_response(
+                query="test",
+                response="test response",
+                context=["test context"],
+                metrics=['answer_relevancy']
             )
             
             if test_results and 'error' not in test_results:
@@ -760,20 +760,20 @@ def evaluate_response(query: str, response: str, relevant_chunks: List[Dict]) ->
     
     try:
         # Prepare retrieval context
-        retrieval_context = [chunk['text'] for chunk in relevant_chunks]
+        context_chunks = [chunk['text'] for chunk in relevant_chunks]
         
         # Get selected metrics
-        metrics_to_use = getattr(st.session_state, 'selected_metrics', ['answer_relevancy', 'faithfulness'])
+        selected_metrics = getattr(st.session_state, 'selected_metrics', ['answer_relevancy', 'faithfulness'])
         
-        if not metrics_to_use:
+        if not selected_metrics:
             return None
         
         # Use our custom evaluator
         results = st.session_state.evaluator.evaluate_response(
             query=query,
             response=response,
-            context=retrieval_context,
-            metrics=metrics_to_use
+            context=context_chunks,
+            metrics=selected_metrics
         )
         
         return results
@@ -1304,7 +1304,7 @@ def display_chat_interface():
             metrics = getattr(st.session_state, 'selected_metrics', [])
             st.markdown(f"""
             <div class="metric-card">
-                <h3>🔍 DeepEval Status</h3>
+                <h3>🔍 Evaluation Status</h3>
                 <p>✅ <strong>Enabled</strong> with {len(metrics)} metrics: {', '.join(metrics)}</p>
                 <p style="font-size: 0.9rem; color: #64748b;">💡 If evaluation fails due to API overload, responses will still be generated without evaluation.</p>
             </div>
@@ -1369,7 +1369,7 @@ def display_chat_interface():
                 # Evaluate response if enabled
                 evaluation_results = None
                 if st.session_state.enable_evaluation:
-                    with st.spinner("Evaluating with DeepEval..."):
+                    with st.spinner("Evaluating response..."):
                         evaluation_results = evaluate_response(prompt, response, relevant_chunks)
                         if evaluation_results:
                             threshold = getattr(st.session_state, 'eval_threshold', 0.7)
@@ -1418,11 +1418,13 @@ def display_chat_interface():
             }
             
             # Extract metric scores
+            threshold = getattr(st.session_state, 'eval_threshold', 0.7)
             for metric_name, result in evaluation_results.items():
                 if isinstance(result, dict) and 'score' in result:
+                    score = result['score']
                     log_entry['metrics'][metric_name] = {
-                        'score': result['score'],
-                        'passed': result.get('passed', False)
+                        'score': score,
+                        'passed': score >= threshold
                     }
             
             st.session_state.evaluation_logs.append(log_entry)
@@ -1481,7 +1483,7 @@ def display_sidebar_info():
     st.sidebar.info("""
     Simple RAG evaluation with:
     - Gemini 2.0 Flash-Lite
-    - DeepEval metrics
+    - Custom RAG metrics
     - Document Q&A
     - Real-time evaluation
     """)
